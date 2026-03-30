@@ -5,11 +5,13 @@ const ai = new GoogleGenAI({ apiKey });
 
 export const geminiModel = ai.models.get({ model: "gemini-3.1-pro-preview" });
 
-export async function generatePersonas(clusters: string[]) {
+export async function generatePersonas(clusters: string[], existingNames: string[] = []) {
   const response = await ai.models.generateContent({
     model: "gemini-3.1-pro-preview",
-    contents: `Based on these UX research clusters: ${clusters.join(", ")}, generate 2-3 distinct user personas. 
-    Return a JSON array of objects with: name, role, frustrations (array), goals (array), bio.`,
+    contents: `Based on these UX research clusters: ${clusters.join(", ")}, generate 2-3 distinct user personas.
+    CRITICAL: Every persona MUST have a unique first name AND a unique last name. No two personas should share a first name or a last name.
+    ${existingNames.length > 0 ? `These names are already taken and MUST NOT be reused (not even the first or last name): ${existingNames.join(", ")}.` : ""}
+    Return a JSON array of objects with: name (full name with first and last), role, frustrations (array), goals (array), bio.`,
     config: {
       responseMimeType: "application/json",
       thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
@@ -67,14 +69,71 @@ export async function mentorRigorCheck(phase: string, data: any) {
 export async function generateInitialInsights(csvData: any[]) {
   const response = await ai.models.generateContent({
     model: "gemini-3.1-pro-preview",
-    contents: `Analyze this raw UX research data: ${JSON.stringify(csvData.slice(0, 100))}.
-    Generate 20-25 broad, summarized stickies that clump ideas together from the survey responses.
-    CRITICAL: Include hard statistics (e.g., percentages, counts) where applicable to ground the insights in data.
-    These should be high-level summaries of common sentiments or data points, not deep insights yet.
-    Return a JSON array of objects with: content (the summary), type ('qualitative' or 'quantitative').`,
+    contents: `You are a UX research analyst. Analyze this raw survey data: ${JSON.stringify(csvData.slice(0, 100))}.
+
+    Your job is to surface PRELIMINARY INSIGHTS — not raw responses — that will help a researcher build an affinity map.
+
+    Guidelines:
+    1. Identify recurring PATTERNS, TENSIONS, and THEMES across multiple responses. Each sticky should synthesize signal from several data points, not echo a single respondent.
+    2. For quantitative insights: include hard statistics (e.g., "72% of respondents rated X below 3", "Average satisfaction score: 2.4/5") computed from the data.
+    3. For qualitative insights: distill a common sentiment, pain point, unmet need, or behavioral pattern (e.g., "Users repeatedly describe onboarding as 'overwhelming' — 8 of 15 mention information overload in their first session").
+    4. Surface CONTRADICTIONS or TENSIONS in the data (e.g., "Users say they want simplicity but also request more features").
+    5. Flag OUTLIER perspectives that challenge the majority view — these are often the most valuable for design.
+    6. Write each insight as a concise, action-oriented observation that naturally suggests which theme it might belong to.
+
+    Generate 20-25 insights. Aim for roughly 60% qualitative, 40% quantitative.
+    Return a JSON array of objects with: content (the insight), type ('qualitative' or 'quantitative').`,
     config: {
       responseMimeType: "application/json",
       thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
+    }
+  });
+  return JSON.parse(response.text || "[]");
+}
+
+export async function suggestThemeNames(stickies: { content: string; type: string }[], existingThemes: string[]) {
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: `You are a UX research analyst helping build an affinity map.
+
+    Here are the current sticky note insights on the board:
+    ${stickies.map(s => `- [${s.type}] ${s.content}`).join("\n")}
+
+    ${existingThemes.length > 0 ? `Existing themes already created: ${existingThemes.join(", ")}` : "No themes created yet."}
+
+    Suggest 3-5 potential theme names that would meaningfully group these insights.
+    - Each theme should represent a distinct, actionable research finding area.
+    - Avoid generic names like "User Feedback" — be specific (e.g., "Onboarding Friction", "Trust & Transparency Gaps").
+    - Do NOT duplicate existing themes. Suggest themes that capture insights not yet covered.
+
+    Return a JSON array of objects: [{ name: string, reason: string }] where reason is a 1-sentence explanation of what insights this theme would capture.`,
+    config: {
+      responseMimeType: "application/json",
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM }
+    }
+  });
+  return JSON.parse(response.text || "[]");
+}
+
+export async function suggestStickyInsights(csvData: any[], existingStickies: string[], themes: string[]) {
+  const response = await ai.models.generateContent({
+    model: "gemini-3.1-pro-preview",
+    contents: `You are a UX research analyst. A researcher is building an affinity map and wants to add more insights.
+
+    Raw survey data: ${JSON.stringify(csvData.slice(0, 100))}
+
+    Insights already on the board:
+    ${existingStickies.map(s => `- ${s}`).join("\n")}
+
+    ${themes.length > 0 ? `Current themes: ${themes.join(", ")}` : "No themes yet."}
+
+    Identify 3-5 GAPS — important insights from the data that are NOT yet represented on the board.
+    Focus on patterns, pain points, or data points that the researcher may have missed.
+
+    Return a JSON array of objects: [{ content: string, type: 'qualitative' | 'quantitative' }]`,
+    config: {
+      responseMimeType: "application/json",
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MEDIUM }
     }
   });
   return JSON.parse(response.text || "[]");

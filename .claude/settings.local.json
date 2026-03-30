@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc:*)",
+      "Bash(ls -la \"c:\\\\Users\\\\miaun\\\\Desktop\\\\Desktop\\\\Carnegie\\\\AI Augmented Designer\\\\UXR-Sensemaker2\"/.env*)"
+    ]
+  }
+}

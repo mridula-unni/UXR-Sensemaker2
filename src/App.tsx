@@ -21,18 +21,24 @@ import {
   FileText,
   Trash2,
   Plus,
-  Edit2
+  Edit2,
+  Sparkles,
+  Loader2,
+  Target,
+  Frown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import { Phase, AppState, StickyNote, Cluster, Persona, ChatMessage, TestPlan, Assessment } from './types';
-import { 
-  mentorRigorCheck, 
-  generatePersonas, 
-  personaChat, 
+import {
+  mentorRigorCheck,
+  generatePersonas,
+  personaChat,
   scanForBias,
   simulateTestResults,
-  generateInitialInsights
+  generateInitialInsights,
+  suggestThemeNames,
+  suggestStickyInsights
 } from './services/geminiService';
 import Papa from 'papaparse';
 import { useDropzone } from 'react-dropzone';
@@ -313,7 +319,7 @@ export default function App() {
     clusters: [],
     personas: [],
     conceptPitch: "",
-    chatHistory: [],
+    chatHistories: {},
     testPlan: { scenarios: [], tasks: [], questions: [] },
     mentorMessages: [{ role: 'mentor', content: "Welcome! Upload your UX research data to begin the Exploratory phase.", timestamp: Date.now() }],
     rigorCheckPassed: false
@@ -325,8 +331,8 @@ export default function App() {
   const [isSimulating, setIsSimulating] = useState(false);
   const [isCheckingRigor, setIsCheckingRigor] = useState(false);
   const [isGeneratingPersonas, setIsGeneratingPersonas] = useState(false);
-  const [activePersona, setActivePersona] = useState<Persona | null>(null);
-  const [chatInput, setChatInput] = useState("");
+  const [expandedPersonaId, setExpandedPersonaId] = useState<string | null>(null);
+  const [personaChatInputs, setPersonaChatInputs] = useState<Record<string, string>>({});
 
   const handleScanBias = async (index: number, text: string) => {
     if (!text.trim()) return;
@@ -391,6 +397,11 @@ ${simulationResult || "Not simulated yet."}
   const [newStickyContent, setNewStickyContent] = useState("");
   const [newClusterName, setNewClusterName] = useState("");
 
+  const [themeSuggestions, setThemeSuggestions] = useState<{ name: string; reason: string }[]>([]);
+  const [stickySuggestions, setStickySuggestions] = useState<{ content: string; type: string }[]>([]);
+  const [isLoadingThemeSuggestions, setIsLoadingThemeSuggestions] = useState(false);
+  const [isLoadingStickySuggestions, setIsLoadingStickySuggestions] = useState(false);
+
   const addSticky = () => {
     if (!newStickyContent.trim()) return;
     const newSticky: StickyNote = {
@@ -404,6 +415,63 @@ ${simulationResult || "Not simulated yet."}
     setNewStickyContent("");
     setIsAddingSticky(false);
   };
+
+  const handleGetThemeSuggestions = async () => {
+    if (state.stickies.length === 0) return;
+    setIsLoadingThemeSuggestions(true);
+    try {
+      const suggestions = await suggestThemeNames(
+        state.stickies.map(s => ({ content: s.content, type: s.type })),
+        state.clusters.map(c => c.name)
+      );
+      setThemeSuggestions(suggestions);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoadingThemeSuggestions(false);
+    }
+  };
+
+  const handleGetStickySuggestions = async () => {
+    if (state.rawCSVData.length === 0) return;
+    setIsLoadingStickySuggestions(true);
+    try {
+      const suggestions = await suggestStickyInsights(
+        state.rawCSVData,
+        state.stickies.map(s => s.content),
+        state.clusters.map(c => c.name)
+      );
+      setStickySuggestions(suggestions);
+    } catch (error) {
+      console.error(error);
+    } finally {
+      setIsLoadingStickySuggestions(false);
+    }
+  };
+
+  const addSuggestedSticky = (content: string, type: string) => {
+    const newSticky: StickyNote = {
+      id: `suggested-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+      content,
+      type: type as 'qualitative' | 'quantitative',
+      x: Math.random() * 400 + 300,
+      y: Math.random() * 300 + 100
+    };
+    setState(prev => ({ ...prev, stickies: [...prev.stickies, newSticky] }));
+    setStickySuggestions(prev => prev.filter(s => s.content !== content));
+  };
+
+  const addSuggestedTheme = (name: string) => {
+    const colors = ['red', 'blue', 'green', 'purple'];
+    const newCluster: Cluster = {
+      id: Math.random().toString(36).substr(2, 9),
+      name,
+      color: colors[state.clusters.length % colors.length]
+    };
+    setState(prev => ({ ...prev, clusters: [...prev.clusters, newCluster] }));
+    setThemeSuggestions(prev => prev.filter(s => s.name !== name));
+  };
+
   const [zoom, setZoom] = useState(1);
   const [isMentorOpen, setIsMentorOpen] = useState(false);
   const canvasRef = React.useRef<HTMLDivElement>(null);
@@ -452,23 +520,65 @@ ${simulationResult || "Not simulated yet."}
 
         } catch (error) {
           console.error(error);
-          // Fallback to raw data if AI fails
-          const fallbackStickies: StickyNote[] = data.slice(0, 15).flatMap((row, i) => {
-            return Object.entries(row).slice(0, 2).map(([key, value], j) => ({
-              id: `${i}-${j}-${Date.now()}`,
-              content: String(value),
-              type: (key.toLowerCase().includes('score') || key.toLowerCase().includes('rate') ? 'quantitative' : 'qualitative') as 'quantitative' | 'qualitative',
-              x: Math.random() * 600 + 50,
-              y: Math.random() * 400 + 50
-            }));
-          }).filter(s => s.content.trim().length > 0);
-          
+          // Fallback: extract meaningful text responses (skip short/date/name-like columns)
+          const isSubstantiveValue = (val: string) => {
+            if (!val || val.trim().length < 15) return false;
+            if (/^\d{1,4}[-/]\d{1,2}[-/]\d{1,4}/.test(val.trim())) return false;
+            if (/^\d+(\.\d+)?$/.test(val.trim())) return false;
+            return true;
+          };
+          const isQuantitativeKey = (key: string) =>
+            /score|rate|rating|rank|scale|number|count|percent|satisfaction/i.test(key);
+
+          const fallbackStickies: StickyNote[] = [];
+          const seen = new Set<string>();
+
+          for (const row of data.slice(0, 30)) {
+            for (const [key, value] of Object.entries(row)) {
+              const strVal = String(value).trim();
+              if (isQuantitativeKey(key) && strVal.length > 0 && !seen.has(strVal)) {
+                seen.add(strVal);
+                fallbackStickies.push({
+                  id: `fb-${fallbackStickies.length}-${Date.now()}`,
+                  content: `${key}: ${strVal}`,
+                  type: 'quantitative',
+                  x: Math.random() * 500 + 100,
+                  y: Math.random() * 300 + 100
+                });
+              } else if (isSubstantiveValue(strVal) && !seen.has(strVal)) {
+                seen.add(strVal);
+                fallbackStickies.push({
+                  id: `fb-${fallbackStickies.length}-${Date.now()}`,
+                  content: strVal,
+                  type: 'qualitative',
+                  x: Math.random() * 500 + 100,
+                  y: Math.random() * 300 + 100
+                });
+              }
+              if (fallbackStickies.length >= 20) break;
+            }
+            if (fallbackStickies.length >= 20) break;
+          }
+
+          // Stagger fallback stickies the same way: 4 initial, rest every 20s
+          const initialFallback = fallbackStickies.slice(0, 4);
+          const remainingFallback = fallbackStickies.slice(4);
+
           setState(prev => ({
             ...prev,
             rawCSVData: data,
-            stickies: fallbackStickies,
-            mentorMessages: [...prev.mentorMessages, { role: 'mentor', content: "AI analysis failed, showing raw data samples instead.", timestamp: Date.now() }]
+            stickies: [...prev.stickies, ...initialFallback],
+            mentorMessages: [...prev.mentorMessages, { role: 'mentor', content: "AI analysis unavailable — check that your GEMINI_API_KEY is set in .env. Showing selected survey responses to get you started. I'll add more every 20 seconds.", timestamp: Date.now() }]
           }));
+
+          remainingFallback.forEach((sticky, index) => {
+            setTimeout(() => {
+              setState(prev => ({
+                ...prev,
+                stickies: [...prev.stickies, sticky]
+              }));
+            }, (index + 1) * 20000);
+          });
         } finally {
           setIsGeneratingInsights(false);
         }
@@ -616,7 +726,8 @@ ${simulationResult || "Not simulated yet."}
     setIsGeneratingPersonas(true);
     try {
       const clustersText = state.clusters.map(c => c.name);
-      const personas = await generatePersonas(clustersText);
+      const existingNames = state.personas.map(p => p.name);
+      const personas = await generatePersonas(clustersText, existingNames);
       setState(prev => ({ ...prev, personas: [...prev.personas, ...personas] }));
     } catch (error) {
       console.error(error);
@@ -628,7 +739,8 @@ ${simulationResult || "Not simulated yet."}
   const handleAddPersonaFromTheme = async (cluster: Cluster) => {
     setIsGeneratingPersonas(true);
     try {
-      const personas = await generatePersonas([cluster.name]);
+      const existingNames = state.personas.map(p => p.name);
+      const personas = await generatePersonas([cluster.name], existingNames);
       setState(prev => ({ ...prev, personas: [...prev.personas, ...personas] }));
     } catch (error) {
       console.error(error);
@@ -637,20 +749,22 @@ ${simulationResult || "Not simulated yet."}
     }
   };
 
-  const handlePersonaChat = async () => {
-    if (!activePersona || !chatInput.trim()) return;
+  const handlePersonaChat = async (persona: Persona) => {
+    const input = personaChatInputs[persona.id]?.trim();
+    if (!input) return;
 
-    const userMsg: ChatMessage = { role: 'user', content: chatInput, timestamp: Date.now() };
-    const newHistory = [...state.chatHistory, userMsg];
-    
-    setState(prev => ({ ...prev, chatHistory: newHistory }));
-    setChatInput("");
+    const userMsg: ChatMessage = { role: 'user', content: input, timestamp: Date.now() };
+    const existingHistory = state.chatHistories[persona.id] || [];
+    const newHistory = [...existingHistory, userMsg];
+
+    setState(prev => ({ ...prev, chatHistories: { ...prev.chatHistories, [persona.id]: newHistory } }));
+    setPersonaChatInputs(prev => ({ ...prev, [persona.id]: "" }));
 
     try {
-      const response = await personaChat(activePersona, state.conceptPitch, newHistory);
+      const response = await personaChat(persona, state.conceptPitch, newHistory);
       setState(prev => ({
         ...prev,
-        chatHistory: [...newHistory, { role: 'persona', content: response || "...", timestamp: Date.now() }]
+        chatHistories: { ...prev.chatHistories, [persona.id]: [...newHistory, { role: 'persona', content: response || "...", timestamp: Date.now() }] }
       }));
     } catch (error) {
       console.error(error);
@@ -728,7 +842,7 @@ ${simulationResult || "Not simulated yet."}
                 <div className="flex gap-2">
                   {isAddingCluster ? (
                     <div className="flex items-center gap-2 bg-white p-2 border border-zinc-200 rounded-lg shadow-lg animate-in slide-in-from-left-2">
-                      <input 
+                      <input
                         autoFocus
                         value={newClusterName}
                         onChange={(e) => setNewClusterName(e.target.value)}
@@ -736,22 +850,30 @@ ${simulationResult || "Not simulated yet."}
                         placeholder="Theme name..."
                         className="text-sm px-2 py-1 border border-zinc-200 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 w-40"
                       />
-                      <button 
+                      <button
                         onClick={addCluster}
                         className="p-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700"
                       >
                         <Plus className="w-4 h-4" />
                       </button>
-                      <button 
-                        onClick={() => setIsAddingCluster(false)}
+                      <button
+                        onClick={() => { setIsAddingCluster(false); setThemeSuggestions([]); }}
                         className="p-1.5 text-zinc-400 hover:text-zinc-600"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
+                      <button
+                        onClick={handleGetThemeSuggestions}
+                        disabled={isLoadingThemeSuggestions || state.stickies.length === 0}
+                        className="p-1.5 text-indigo-500 hover:text-indigo-700 disabled:text-zinc-300 transition-colors"
+                        title="Get AI theme suggestions"
+                      >
+                        {isLoadingThemeSuggestions ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                      </button>
                     </div>
                   ) : (
-                    <button 
-                      onClick={() => setIsAddingCluster(true)}
+                    <button
+                      onClick={() => { setIsAddingCluster(true); setStickySuggestions([]); }}
                       className="px-4 py-2 bg-white border border-zinc-200 rounded-lg shadow-sm text-sm font-bold flex items-center gap-2 hover:bg-zinc-50 transition-all active:scale-95"
                     >
                       <Plus className="w-4 h-4" /> New Theme
@@ -760,7 +882,7 @@ ${simulationResult || "Not simulated yet."}
 
                   {isAddingSticky ? (
                     <div className="flex items-center gap-2 bg-white p-2 border border-zinc-200 rounded-lg shadow-lg animate-in slide-in-from-left-2">
-                      <input 
+                      <input
                         autoFocus
                         value={newStickyContent}
                         onChange={(e) => setNewStickyContent(e.target.value)}
@@ -768,29 +890,82 @@ ${simulationResult || "Not simulated yet."}
                         placeholder="Sticky content..."
                         className="text-sm px-2 py-1 border border-zinc-200 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500 w-40"
                       />
-                      <button 
+                      <button
                         onClick={addSticky}
                         className="p-1.5 bg-indigo-600 text-white rounded hover:bg-indigo-700"
                       >
                         <Plus className="w-4 h-4" />
                       </button>
-                      <button 
-                        onClick={() => setIsAddingSticky(false)}
+                      <button
+                        onClick={() => { setIsAddingSticky(false); setStickySuggestions([]); }}
                         className="p-1.5 text-zinc-400 hover:text-zinc-600"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
+                      <button
+                        onClick={handleGetStickySuggestions}
+                        disabled={isLoadingStickySuggestions || state.rawCSVData.length === 0}
+                        className="p-1.5 text-indigo-500 hover:text-indigo-700 disabled:text-zinc-300 transition-colors"
+                        title="Suggest missing insights"
+                      >
+                        {isLoadingStickySuggestions ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                      </button>
                     </div>
                   ) : (
-                    <button 
-                      onClick={() => setIsAddingSticky(true)}
+                    <button
+                      onClick={() => { setIsAddingSticky(true); setThemeSuggestions([]); }}
                       className="px-4 py-2 bg-white border border-zinc-200 rounded-lg shadow-sm text-sm font-bold flex items-center gap-2 hover:bg-zinc-50 transition-all active:scale-95"
                     >
                       <Plus className="w-4 h-4" /> New Sticky
                     </button>
                   )}
                 </div>
-                
+
+                {/* AI Theme Suggestions Dropdown */}
+                {themeSuggestions.length > 0 && (
+                  <div className="bg-white border border-indigo-200 rounded-lg shadow-lg p-3 max-w-sm animate-in slide-in-from-top-2">
+                    <p className="text-[10px] font-bold text-indigo-600 uppercase mb-2 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" /> Suggested Themes
+                    </p>
+                    <div className="flex flex-col gap-1.5">
+                      {themeSuggestions.map((s, i) => (
+                        <button
+                          key={i}
+                          onClick={() => { addSuggestedTheme(s.name); setNewClusterName(""); }}
+                          className="text-left p-2 rounded-md hover:bg-indigo-50 border border-transparent hover:border-indigo-200 transition-all group"
+                        >
+                          <span className="text-sm font-semibold text-zinc-800 group-hover:text-indigo-700">{s.name}</span>
+                          <p className="text-[11px] text-zinc-500 mt-0.5">{s.reason}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* AI Sticky Suggestions Dropdown */}
+                {stickySuggestions.length > 0 && (
+                  <div className="bg-white border border-indigo-200 rounded-lg shadow-lg p-3 max-w-md animate-in slide-in-from-top-2">
+                    <p className="text-[10px] font-bold text-indigo-600 uppercase mb-2 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" /> Missing Insights
+                    </p>
+                    <div className="flex flex-col gap-1.5">
+                      {stickySuggestions.map((s, i) => (
+                        <button
+                          key={i}
+                          onClick={() => addSuggestedSticky(s.content, s.type)}
+                          className="text-left p-2 rounded-md hover:bg-indigo-50 border border-transparent hover:border-indigo-200 transition-all group"
+                        >
+                          <span className={cn(
+                            "text-[10px] font-bold uppercase px-1.5 py-0.5 rounded",
+                            s.type === 'quantitative' ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+                          )}>{s.type}</span>
+                          <p className="text-sm text-zinc-700 mt-1 group-hover:text-indigo-700">{s.content}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {activeClusterId && (
                   <div className="text-[10px] font-bold text-indigo-600 uppercase bg-indigo-50 px-3 py-1.5 rounded-full border border-indigo-100 animate-pulse shadow-sm">
                     Click stickies to assign to theme
@@ -871,145 +1046,254 @@ ${simulationResult || "Not simulated yet."}
             {isGeneratingPersonas ? "Generating..." : "Generate from Themes"}
           </button>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {state.personas.map(p => (
-            <motion.div 
-              key={p.id} 
-              layout
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              onClick={() => setActivePersona(p)}
-              className={cn(
-                "p-6 border-2 rounded-2xl cursor-pointer transition-all relative overflow-hidden group",
-                activePersona?.id === p.id 
-                  ? "border-indigo-500 bg-indigo-50/50 shadow-lg shadow-indigo-100" 
-                  : "border-zinc-100 bg-white hover:border-indigo-200 hover:shadow-md"
-              )}
-            >
-              <div className="absolute top-0 right-0 w-24 h-24 bg-indigo-500/5 rounded-bl-full -mr-8 -mt-8 transition-transform group-hover:scale-110" />
-              
-              <div className="relative z-10 space-y-4">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h3 className="font-bold text-xl text-zinc-900">{p.name}</h3>
-                    <p className="text-xs font-bold text-indigo-600 uppercase tracking-widest mt-0.5">{p.role}</p>
-                  </div>
-                  <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600">
-                    <User className="w-5 h-5" />
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+          {state.personas.map((p, idx) => {
+            const avatarColors = [
+              'from-violet-400 to-indigo-400',
+              'from-pink-400 to-rose-400',
+              'from-emerald-400 to-teal-400',
+              'from-amber-400 to-orange-400',
+              'from-cyan-400 to-blue-400',
+              'from-fuchsia-400 to-purple-400'
+            ];
+            const avatarGradient = avatarColors[idx % avatarColors.length];
+            const initials = p.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+            const isExpanded = expandedPersonaId === p.id;
+            const chatHistory = state.chatHistories[p.id] || [];
+            const chatInputValue = personaChatInputs[p.id] || "";
+
+            return (
+              <motion.div
+                key={p.id}
+                layout
+                initial={{ opacity: 0, scale: 0.95, y: 12 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                transition={{ delay: idx * 0.08 }}
+                className={cn(
+                  "rounded-2xl transition-all relative overflow-hidden",
+                  isExpanded
+                    ? "ring-2 ring-indigo-500 ring-offset-2 shadow-xl shadow-indigo-100/50 col-span-1 md:col-span-2 xl:col-span-2"
+                    : "shadow-sm hover:shadow-lg hover:-translate-y-0.5"
+                )}
+              >
+                {/* Colored header strip */}
+                <div className={cn("h-2 bg-gradient-to-r", avatarGradient)} />
+
+                <div className="bg-white">
+                  <div className={cn(
+                    isExpanded ? "flex flex-col lg:flex-row" : ""
+                  )}>
+                    {/* Persona info side */}
+                    <div className={cn(
+                      "p-5 space-y-3",
+                      isExpanded ? "lg:w-1/2 lg:border-r lg:border-zinc-100" : ""
+                    )}>
+                      {/* Avatar + Name row */}
+                      <div className="flex items-center gap-3">
+                        <div className={cn(
+                          "w-11 h-11 rounded-full bg-gradient-to-br flex items-center justify-center text-white font-bold text-sm shrink-0 shadow-md",
+                          avatarGradient
+                        )}>
+                          {initials}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <h3 className="font-bold text-base text-zinc-900">{p.name}</h3>
+                          <p className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wide">{p.role}</p>
+                        </div>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedPersonaId(isExpanded ? null : p.id);
+                          }}
+                          className={cn(
+                            "p-1.5 rounded-lg transition-colors shrink-0",
+                            isExpanded
+                              ? "bg-indigo-100 text-indigo-600"
+                              : "hover:bg-zinc-100 text-zinc-400 hover:text-indigo-500"
+                          )}
+                          title={isExpanded ? "Close chat" : "Open chat"}
+                        >
+                          <MessageSquare className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* Bio */}
+                      <p className="text-[12px] text-zinc-500 leading-relaxed">
+                        {p.bio}
+                      </p>
+
+                      {/* Goals */}
+                      <div className="bg-emerald-50/70 rounded-lg p-2.5">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <Target className="w-3 h-3 text-emerald-600" />
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">Goals</span>
+                        </div>
+                        <ul className="space-y-1">
+                          {p.goals.map((g, i) => (
+                            <li key={i} className="text-[11px] text-emerald-800 flex items-start gap-1.5">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-500 mt-0.5 shrink-0" />
+                              <span>{g}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      {/* Frustrations */}
+                      <div className="bg-rose-50/70 rounded-lg p-2.5">
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <Frown className="w-3 h-3 text-rose-500" />
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-rose-500">Frustrations</span>
+                        </div>
+                        <ul className="space-y-1">
+                          {p.frustrations.map((f, i) => (
+                            <li key={i} className="text-[11px] text-rose-800 flex items-start gap-1.5">
+                              <AlertCircle className="w-3 h-3 text-rose-400 mt-0.5 shrink-0" />
+                              <span>{f}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      {/* Click hint (only when collapsed) */}
+                      {!isExpanded && (
+                        <button
+                          onClick={() => setExpandedPersonaId(p.id)}
+                          className="w-full text-[10px] text-zinc-400 text-center pt-1 hover:text-indigo-500 transition-colors flex items-center justify-center gap-1"
+                        >
+                          <MessageSquare className="w-3 h-3" />
+                          Chat with {p.name.split(' ')[0]}
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Inline chat side (only when expanded) */}
+                    <AnimatePresence>
+                      {isExpanded && (
+                        <motion.div
+                          initial={{ opacity: 0, width: 0 }}
+                          animate={{ opacity: 1, width: 'auto' }}
+                          exit={{ opacity: 0, width: 0 }}
+                          className="lg:w-1/2 flex flex-col border-t lg:border-t-0 border-zinc-100"
+                        >
+                          <div className="px-4 py-2.5 bg-zinc-50 border-b border-zinc-100 flex items-center gap-2">
+                            <div className={cn(
+                              "w-6 h-6 rounded-full bg-gradient-to-br flex items-center justify-center text-white text-[9px] font-bold",
+                              avatarGradient
+                            )}>
+                              {initials}
+                            </div>
+                            <span className="text-xs font-semibold text-zinc-600">Chat with {p.name.split(' ')[0]}</span>
+                            {chatHistory.length > 0 && (
+                              <span className="text-[10px] text-zinc-400 ml-auto">{chatHistory.length} messages</span>
+                            )}
+                          </div>
+
+                          <div className="flex-1 overflow-y-auto p-3 space-y-2.5 min-h-[200px] max-h-[320px] bg-white">
+                            {chatHistory.length === 0 && (
+                              <div className="flex items-center justify-center h-full text-zinc-300 text-xs text-center p-4">
+                                {state.conceptPitch.trim()
+                                  ? `Pitch your concept to ${p.name.split(' ')[0]} and get their feedback`
+                                  : "Write a concept pitch above first, then chat here"}
+                              </div>
+                            )}
+                            {chatHistory.map((msg, i) => (
+                              <div key={i} className={cn(
+                                "max-w-[85%] px-3 py-2 rounded-xl text-[12px] leading-relaxed",
+                                msg.role === 'user'
+                                  ? "ml-auto bg-indigo-600 text-white rounded-br-sm"
+                                  : "bg-zinc-100 text-zinc-800 rounded-bl-sm"
+                              )}>
+                                {msg.content}
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="p-2.5 bg-zinc-50 border-t border-zinc-100 flex gap-2">
+                            <input
+                              value={chatInputValue}
+                              onChange={(e) => setPersonaChatInputs(prev => ({ ...prev, [p.id]: e.target.value }))}
+                              onKeyDown={(e) => e.key === 'Enter' && handlePersonaChat(p)}
+                              placeholder={`Ask ${p.name.split(' ')[0]} something...`}
+                              className="flex-1 px-3 py-1.5 border border-zinc-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white"
+                            />
+                            <button
+                              onClick={() => handlePersonaChat(p)}
+                              disabled={!chatInputValue.trim()}
+                              className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-30 transition-all"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </div>
+              </motion.div>
+            );
+          })}
 
-                <p className="text-sm text-zinc-600 leading-relaxed italic">"{p.bio}"</p>
-
-                <div className="grid grid-cols-2 gap-4 pt-2">
-                  <div className="space-y-1.5">
-                    <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Goals</h4>
-                    <ul className="space-y-1">
-                      {p.goals.map((g, i) => (
-                        <li key={i} className="text-[11px] text-zinc-700 flex items-start gap-1.5">
-                          <CheckCircle2 className="w-3 h-3 text-green-500 mt-0.5 shrink-0" />
-                          {g}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div className="space-y-1.5">
-                    <h4 className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Frustrations</h4>
-                    <ul className="space-y-1">
-                      {p.frustrations.map((f, i) => (
-                        <li key={i} className="text-[11px] text-zinc-700 flex items-start gap-1.5">
-                          <AlertCircle className="w-3 h-3 text-amber-500 mt-0.5 shrink-0" />
-                          {f}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          ))}
-          
+          {/* Add Persona from Theme card */}
           {state.clusters.length > 0 && (
-            <div className="border-2 border-dashed border-zinc-200 rounded-2xl p-6 flex flex-col items-center justify-center text-center space-y-4 bg-zinc-50/50">
-              <div className="w-12 h-12 rounded-full bg-white border border-zinc-200 flex items-center justify-center text-zinc-400">
-                <Plus className="w-6 h-6" />
+            <motion.div
+              layout
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="rounded-2xl border-2 border-dashed border-zinc-200 bg-zinc-50/50 p-5 flex flex-col items-center justify-center text-center space-y-4 min-h-[280px]"
+            >
+              <div className="w-14 h-14 rounded-full bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center">
+                <Plus className="w-6 h-6 text-indigo-400" />
               </div>
               <div>
-                <h3 className="font-bold text-sm text-zinc-900">Add Persona from Theme</h3>
-                <p className="text-xs text-zinc-500 mt-1">Generate a persona specifically for a theme.</p>
+                <h3 className="font-bold text-sm text-zinc-700">Add Persona from Theme</h3>
+                <p className="text-[11px] text-zinc-400 mt-1">Pick a theme to generate a persona for</p>
               </div>
               <div className="flex flex-wrap justify-center gap-2">
-                {state.clusters.map(c => (
-                  <button
-                    key={c.id}
-                    onClick={() => handleAddPersonaFromTheme(c)}
-                    disabled={isGeneratingPersonas}
-                    className="px-3 py-1.5 bg-white border border-zinc-200 rounded-full text-[10px] font-bold uppercase tracking-wider hover:border-indigo-500 hover:text-indigo-600 transition-all disabled:opacity-50"
-                  >
-                    {c.name}
-                  </button>
-                ))}
+                {state.clusters.map(c => {
+                  const themeColors: Record<string, string> = {
+                    red: 'hover:border-red-400 hover:text-red-600 hover:bg-red-50',
+                    blue: 'hover:border-blue-400 hover:text-blue-600 hover:bg-blue-50',
+                    green: 'hover:border-green-400 hover:text-green-600 hover:bg-green-50',
+                    purple: 'hover:border-purple-400 hover:text-purple-600 hover:bg-purple-50'
+                  };
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => handleAddPersonaFromTheme(c)}
+                      disabled={isGeneratingPersonas}
+                      className={cn(
+                        "px-3 py-1.5 bg-white border border-zinc-200 rounded-full text-[11px] font-semibold transition-all disabled:opacity-50 shadow-sm",
+                        themeColors[c.color] || 'hover:border-indigo-400 hover:text-indigo-600'
+                      )}
+                    >
+                      {c.name}
+                    </button>
+                  );
+                })}
               </div>
-            </div>
+              {isGeneratingPersonas && (
+                <div className="flex items-center gap-2 text-[11px] text-indigo-500">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  Generating...
+                </div>
+              )}
+            </motion.div>
           )}
         </div>
       </section>
 
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="space-y-4">
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <ClipboardCheck className="w-5 h-5 text-indigo-600" />
-            Concept Pitch
-          </h2>
-          <textarea
-            value={state.conceptPitch}
-            onChange={(e) => setState(prev => ({ ...prev, conceptPitch: e.target.value }))}
-            placeholder="Describe your proposed solution here..."
-            className="w-full h-64 p-4 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm"
-          />
-        </div>
-
-        <div className="space-y-4 flex flex-col h-[400px]">
-          <h2 className="text-xl font-semibold flex items-center gap-2">
-            <MessageSquare className="w-5 h-5 text-indigo-600" />
-            Persona Feedback
-          </h2>
-          <div className="flex-1 border border-zinc-200 rounded-xl bg-zinc-50 overflow-hidden flex flex-col">
-            {!activePersona ? (
-              <div className="flex-1 flex items-center justify-center text-zinc-400 text-sm p-8 text-center">
-                Select a persona above to start pitching your concept.
-              </div>
-            ) : (
-              <>
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                  {state.chatHistory.map((msg, i) => (
-                    <div key={i} className={cn(
-                      "max-w-[80%] p-3 rounded-xl text-sm",
-                      msg.role === 'user' ? "ml-auto bg-indigo-600 text-white" : "bg-white border border-zinc-200 text-zinc-800"
-                    )}>
-                      {msg.content}
-                    </div>
-                  ))}
-                </div>
-                <div className="p-3 bg-white border-t border-zinc-200 flex gap-2">
-                  <input 
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handlePersonaChat()}
-                    placeholder={`Chat with ${activePersona.name}...`}
-                    className="flex-1 px-3 py-2 border border-zinc-200 rounded-md text-sm focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <button 
-                    onClick={handlePersonaChat}
-                    className="p-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
-                  >
-                    <Send className="w-4 h-4" />
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+      {/* Concept Pitch - full width */}
+      <section className="space-y-4">
+        <h2 className="text-xl font-semibold flex items-center gap-2">
+          <ClipboardCheck className="w-5 h-5 text-indigo-600" />
+          Concept Pitch
+        </h2>
+        <textarea
+          value={state.conceptPitch}
+          onChange={(e) => setState(prev => ({ ...prev, conceptPitch: e.target.value }))}
+          placeholder="Describe your proposed solution here. Then open any persona's chat to pitch it to them..."
+          className="w-full h-40 p-4 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm"
+        />
       </section>
     </div>
   );

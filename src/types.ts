@@ -57,7 +57,7 @@ export interface AppState {
   clusters: Cluster[];
   personas: Persona[];
   conceptPitch: string;
-  chatHistory: ChatMessage[];
+  chatHistories: Record<string, ChatMessage[]>;
   testPlan: TestPlan;
   mentorMessages: ChatMessage[];
   rigorCheckPassed: boolean;
