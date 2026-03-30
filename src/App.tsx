@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, Component, ReactNode } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Layout, 
   Search, 
@@ -244,12 +244,12 @@ const MethodsMentor = ({
           {lastAssessment && (
             <div className="grid grid-cols-2 gap-2">
               {[
-                { id: 'data_utilization', label: 'Data Utilization', ...lastAssessment.data_utilization },
-                { id: 'thematic_quality', label: 'Thematic Quality', ...lastAssessment.thematic_quality },
-                { id: 'system_alignment', label: 'System Alignment', ...lastAssessment.system_alignment },
-                { id: 'bias', label: 'Bias', ...lastAssessment.bias }
-              ].map((cat) => (
-                <div key={cat.id} className={cn(
+                { label: 'Data Utilization', ...lastAssessment.data_utilization },
+                { label: 'Thematic Quality', ...lastAssessment.thematic_quality },
+                { label: 'System Alignment', ...lastAssessment.system_alignment },
+                { label: 'Bias', ...lastAssessment.bias }
+              ].map((cat, i) => (
+                <div key={i} className={cn(
                   "p-2 rounded-lg border text-[10px] flex flex-col gap-1",
                   cat.passed ? "bg-green-50 border-green-100" : "bg-red-50 border-red-100"
                 )}>
@@ -334,9 +334,8 @@ export default function App() {
     try {
       const result = await scanForBias(text);
       setBiasResults(prev => ({ ...prev, [index]: result }));
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      // Silent fail for bias scan to not interrupt workflow, but log it
     } finally {
       setIsScanning(false);
     }
@@ -347,9 +346,8 @@ export default function App() {
     try {
       const result = await simulateTestResults(state.testPlan, state.personas, state.conceptPitch);
       setSimulationResult(result || "No results generated.");
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      setSimulationResult(`Error: ${error.message || "Failed to simulate results."}`);
     } finally {
       setIsSimulating(false);
     }
@@ -586,17 +584,8 @@ ${simulationResult || "Not simulated yet."}
           }]
         }));
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      setState(prev => ({
-        ...prev,
-        mentorMessages: [...prev.mentorMessages, { 
-          role: 'mentor', 
-          content: `Error: ${error.message || "I encountered an issue checking your work. Please try again."}`, 
-          timestamp: Date.now() 
-        }]
-      }));
-      setIsMentorOpen(true);
     } finally {
       setIsCheckingRigor(false);
     }
@@ -629,17 +618,8 @@ ${simulationResult || "Not simulated yet."}
       const clustersText = state.clusters.map(c => c.name);
       const personas = await generatePersonas(clustersText);
       setState(prev => ({ ...prev, personas: [...prev.personas, ...personas] }));
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      setState(prev => ({
-        ...prev,
-        mentorMessages: [...prev.mentorMessages, { 
-          role: 'mentor', 
-          content: `Persona Generation Error: ${error.message || "Failed to generate personas."}`, 
-          timestamp: Date.now() 
-        }]
-      }));
-      setIsMentorOpen(true);
     } finally {
       setIsGeneratingPersonas(false);
     }
@@ -650,17 +630,8 @@ ${simulationResult || "Not simulated yet."}
     try {
       const personas = await generatePersonas([cluster.name]);
       setState(prev => ({ ...prev, personas: [...prev.personas, ...personas] }));
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      setState(prev => ({
-        ...prev,
-        mentorMessages: [...prev.mentorMessages, { 
-          role: 'mentor', 
-          content: `Persona Generation Error: ${error.message || "Failed to generate persona for this theme."}`, 
-          timestamp: Date.now() 
-        }]
-      }));
-      setIsMentorOpen(true);
     } finally {
       setIsGeneratingPersonas(false);
     }
@@ -681,19 +652,15 @@ ${simulationResult || "Not simulated yet."}
         ...prev,
         chatHistory: [...newHistory, { role: 'persona', content: response || "...", timestamp: Date.now() }]
       }));
-    } catch (error: any) {
+    } catch (error) {
       console.error(error);
-      setState(prev => ({
-        ...prev,
-        chatHistory: [...newHistory, { role: 'persona', content: `Error: ${error.message || "I'm having trouble responding right now."}`, timestamp: Date.now() }]
-      }));
     }
   };
 
   // --- Render Phases ---
 
   const renderExploratory = () => (
-    <div key="exploratory" className="flex-1 flex overflow-hidden relative bg-zinc-50/30">
+    <div className="flex-1 flex overflow-hidden relative bg-zinc-50/30">
       {state.stickies.length === 0 ? (
         <div className="flex-1 flex items-center justify-center p-8">
           <div 
@@ -889,7 +856,7 @@ ${simulationResult || "Not simulated yet."}
   );
 
   const renderGenerative = () => (
-    <div key="generative" className="flex-1 flex flex-col p-8 overflow-y-auto space-y-8">
+    <div className="flex-1 flex flex-col p-8 overflow-y-auto space-y-8">
       <section className="space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold flex items-center gap-2">
@@ -1048,7 +1015,7 @@ ${simulationResult || "Not simulated yet."}
   );
 
   const renderEvaluative = () => (
-    <div key="evaluative" className="flex-1 flex flex-col p-8 overflow-y-auto space-y-8">
+    <div className="flex-1 flex flex-col p-8 overflow-y-auto space-y-8">
       <section className="space-y-6">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold flex items-center gap-2">
