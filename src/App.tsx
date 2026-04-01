@@ -260,12 +260,22 @@ const MethodsMentor = ({
           {lastAssessment && (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
-                {[
+                {(phase === 'evaluative' ? [
+                  { label: 'Eval Coverage', ...lastAssessment.data_utilization },
+                  { label: 'Issue Severity', ...lastAssessment.thematic_quality },
+                  { label: 'Actionability', ...lastAssessment.system_alignment },
+                  { label: 'Method Rigor', ...lastAssessment.bias }
+                ] : phase === 'generative' ? [
+                  { label: 'Data Grounding', ...lastAssessment.data_utilization },
+                  { label: 'Concept Quality', ...lastAssessment.thematic_quality },
+                  { label: 'Persona Alignment', ...lastAssessment.system_alignment },
+                  { label: 'Blind Spots', ...lastAssessment.bias }
+                ] : [
                   { label: 'Data Utilization', ...lastAssessment.data_utilization },
                   { label: 'Thematic Quality', ...lastAssessment.thematic_quality },
                   { label: 'System Alignment', ...lastAssessment.system_alignment },
                   { label: 'Bias', ...lastAssessment.bias }
-                ].map((cat, i) => (
+                ]).map((cat, i) => (
                   <div key={i} className={cn(
                     "p-2 rounded-lg border text-[10px] flex flex-col gap-1",
                     cat.passed ? "bg-green-50 border-green-100" : "bg-red-50 border-red-100"
@@ -697,40 +707,75 @@ ${simulationResult || "Not simulated yet."}
   const handleCheckRigor = async () => {
     setIsCheckingRigor(true);
     try {
-      const isGenerative = state.currentPhase === 'generative';
+      const phase = state.currentPhase;
 
-      const data = isGenerative
-        ? {
-            clusters: state.clusters.map(c => c.name),
-            personas: state.personas.map(p => ({ name: p.name, role: p.role, goals: p.goals, frustrations: p.frustrations })),
-            concepts: [...state.concepts].sort((a, b) => a.rank - b.rank).map(c => ({ rank: c.rank, name: c.name, text: c.text, notes: c.notes })),
-            chatHistories: Object.fromEntries(
-              Object.entries(state.chatHistories).map(([pid, msgs]: [string, ChatMessage[]]) => {
-                const persona = state.personas.find(p => p.id === pid);
-                return [persona?.name || pid, msgs.map(m => ({ role: m.role, content: m.content }))];
-              })
-            )
-          }
-        : {
-            stickies: state.stickies,
-            clusters: state.clusters,
-            testPlan: state.testPlan
-          };
+      let data: any;
+      if (phase === 'generative') {
+        data = {
+          clusters: state.clusters.map(c => c.name),
+          personas: state.personas.map(p => ({ name: p.name, role: p.role, goals: p.goals, frustrations: p.frustrations })),
+          concepts: [...state.concepts].sort((a, b) => a.rank - b.rank).map(c => ({ rank: c.rank, name: c.name, text: c.text, notes: c.notes })),
+          chatHistories: Object.fromEntries(
+            Object.entries(state.chatHistories).map(([pid, msgs]: [string, ChatMessage[]]) => {
+              const persona = state.personas.find(p => p.id === pid);
+              return [persona?.name || pid, msgs.map(m => ({ role: m.role, content: m.content }))];
+            })
+          )
+        };
+      } else if (phase === 'evaluative') {
+        data = {
+          url: state.evaluativeUrl,
+          personas: state.personas.map(p => ({ name: p.name, role: p.role, goals: p.goals, frustrations: p.frustrations })),
+          evaluations: state.personaEvaluations.map(e => {
+            const persona = state.personas.find(p => p.id === e.personaId);
+            return {
+              personaName: persona?.name,
+              satisfactionScore: e.satisfactionScore,
+              summary: e.summary,
+              topIssues: e.topIssues,
+              positives: e.positives,
+              heuristicAvg: e.heuristics?.length ? (e.heuristics.reduce((s, h) => s + h.score, 0) / e.heuristics.length).toFixed(1) : null
+            };
+          }),
+          interviewHistories: Object.fromEntries(
+            Object.entries(state.evalChatHistories).map(([pid, msgs]: [string, ChatMessage[]]) => {
+              const persona = state.personas.find(p => p.id === pid);
+              return [persona?.name || pid, msgs.map(m => ({ role: m.role, content: m.content }))];
+            })
+          ),
+          testPlan: state.testPlan
+        };
+      } else {
+        data = {
+          stickies: state.stickies,
+          clusters: state.clusters,
+          testPlan: state.testPlan
+        };
+      }
 
       const result = await mentorRigorCheck(state.currentPhase, data);
       const newMentorMessages: ChatMessage[] = [];
 
       if (result.revealedInsights && result.revealedInsights.length > 0) {
-        if (isGenerative) {
-          // For generative phase: store suggestions for the sparkle button
+        if (phase === 'generative') {
           setMentorConceptSuggestions(result.revealedInsights.map((insight: any) => insight.content));
-
           newMentorMessages.push({
             role: 'mentor',
             content: `I have ${result.revealedInsights.length} concept suggestion${result.revealedInsights.length > 1 ? 's' : ''} based on gaps I see. Use the sparkle button next to "New Concept" to add them one at a time.`,
             timestamp: Date.now()
           });
-
+          setState(prev => ({
+            ...prev,
+            rigorCheckPassed: result.passed,
+            lastAssessment: result,
+            mentorMessages: [...prev.mentorMessages, ...newMentorMessages]
+          }));
+        } else if (phase === 'evaluative') {
+          newMentorMessages.push({
+            role: 'mentor',
+            content: `I found ${result.revealedInsights.length} usability issue${result.revealedInsights.length > 1 ? 's' : ''} that the persona evaluations may have missed:\n${result.revealedInsights.map((i: any) => `• ${i.content}`).join('\n')}`,
+            timestamp: Date.now()
+          });
           setState(prev => ({
             ...prev,
             rigorCheckPassed: result.passed,
@@ -738,7 +783,6 @@ ${simulationResult || "Not simulated yet."}
             mentorMessages: [...prev.mentorMessages, ...newMentorMessages]
           }));
         } else {
-          // For exploratory phase: revealed insights are stickies
           const newStickies: StickyNote[] = result.revealedInsights.map((insight: any, i: number) => ({
             id: `revealed-${Date.now()}-${i}`,
             content: insight.content,
@@ -746,13 +790,11 @@ ${simulationResult || "Not simulated yet."}
             x: 100 + (i * 20),
             y: 100 + (i * 20)
           }));
-
           newMentorMessages.push({
             role: 'mentor',
             content: `I've discovered some insights that weren't represented in your map. I've added them as new stickies for you to consider.`,
             timestamp: Date.now()
           });
-
           setState(prev => ({
             ...prev,
             stickies: [...prev.stickies, ...newStickies],
@@ -762,12 +804,21 @@ ${simulationResult || "Not simulated yet."}
           }));
         }
       } else {
-        const passedMsg = isGenerative
-          ? "Your concept ranking is well-reasoned and grounded in persona feedback. Great work!"
-          : "Excellent work! Your synthesis is rigorous and well-grounded.";
-        const failedMsg = isGenerative
-          ? "I've reviewed your concepts and ranking. Check the criteria below — consider having more persona conversations or revising your ranking."
-          : "I've reviewed your map. Check the criteria below for areas of improvement.";
+        const messages: Record<string, { passed: string; failed: string }> = {
+          exploratory: {
+            passed: "Excellent work! Your synthesis is rigorous and well-grounded.",
+            failed: "I've reviewed your map. Check the criteria below for areas of improvement."
+          },
+          generative: {
+            passed: "Your concept ranking is well-reasoned and grounded in persona feedback. Great work!",
+            failed: "I've reviewed your concepts and ranking. Check the criteria below — consider having more persona conversations or revising your ranking."
+          },
+          evaluative: {
+            passed: "Strong evaluative work! Your persona evaluations are thorough and the issues identified are actionable.",
+            failed: "I've reviewed your evaluation. Check the criteria below — consider interviewing more personas or digging deeper into contradictory scores."
+          }
+        };
+        const msg = messages[phase] || messages.exploratory;
 
         setState(prev => ({
           ...prev,
@@ -775,7 +826,7 @@ ${simulationResult || "Not simulated yet."}
           lastAssessment: result,
           mentorMessages: [...prev.mentorMessages, {
             role: 'mentor',
-            content: result.passed ? passedMsg : failedMsg,
+            content: result.passed ? msg.passed : msg.failed,
             timestamp: Date.now()
           }]
         }));

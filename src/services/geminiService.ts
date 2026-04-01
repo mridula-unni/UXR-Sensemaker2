@@ -41,8 +41,6 @@ export async function personaChat(persona: any, conceptsSummary: string, history
 }
 
 export async function mentorRigorCheck(phase: string, data: any) {
-  const isGenerative = phase === 'generative';
-
   const exploratoryPrompt = `You are the UX Methods Mentor. Evaluate the user's affinity map in the exploratory phase.
     Data: ${JSON.stringify(data)}.
 
@@ -95,9 +93,41 @@ export async function mentorRigorCheck(phase: string, data: any) {
       followUpStudies: [{ method: string, gap: string, description: string }]
     }.`;
 
+  const evaluativePrompt = `You are the UX Methods Mentor. Evaluate the user's evaluative research work in the evaluative phase.
+    Data: ${JSON.stringify(data)}.
+
+    The user has run persona-based heuristic evaluations on a website/prototype and may have conducted follow-up interviews with each persona. Evaluate using four categories:
+    1. Evaluation Coverage: Did the personas collectively cover the full range of user types and use cases? Are there user segments or accessibility needs not represented? Were enough heuristics meaningfully scored (not all 3s)?
+    2. Issue Severity & Prioritization: Are the top usability issues identified by personas genuinely critical, or superficial? Do the satisfaction scores reflect the severity of issues found? Is there a clear prioritization of what to fix first?
+    3. Actionability: Can the evaluation findings be directly translated into design improvements? Are the issues specific enough to act on (not vague like "needs better UX")? Did the researcher conduct follow-up interviews to dig deeper into ambiguous scores?
+    4. Methodological Rigor: Was the evaluation conducted systematically? Did the researcher interview personas to understand the "why" behind scores, not just accept surface-level ratings? Are there contradictions between personas that need resolution?
+
+    Also, identify 1-3 specific usability issues or design opportunities that the personas may have missed or under-emphasized.
+
+    Finally, suggest 2-4 specific FOLLOW-UP STUDIES appropriate for the evaluative phase — e.g., live usability testing with real users, A/B testing, accessibility audits, eye-tracking studies, think-aloud protocols, remote unmoderated testing, SUS/SUPR-Q benchmarking, tree testing, first-click testing, etc. Each suggestion should:
+    - Name the specific method
+    - Explain what evaluative gap it would fill that persona evaluation alone cannot
+    - Describe who to recruit and what to measure
+
+    Return a JSON object: {
+      data_utilization: { passed: boolean, feedback_string: string },
+      thematic_quality: { passed: boolean, feedback_string: string },
+      system_alignment: { passed: boolean, feedback_string: string },
+      bias: { passed: boolean, feedback_string: string },
+      passed: boolean,
+      revealedInsights: [{ content: string, type: 'qualitative' }],
+      followUpStudies: [{ method: string, gap: string, description: string }]
+    }.`;
+
+  const promptMap: Record<string, string> = {
+    exploratory: exploratoryPrompt,
+    generative: generativePrompt,
+    evaluative: evaluativePrompt
+  };
+
   const response = await ai.models.generateContent({
     model: "gemini-3.1-pro-preview",
-    contents: isGenerative ? generativePrompt : exploratoryPrompt,
+    contents: promptMap[phase] || exploratoryPrompt,
     config: {
       responseMimeType: "application/json",
       thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH }
