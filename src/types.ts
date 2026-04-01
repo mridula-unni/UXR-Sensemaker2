@@ -30,6 +30,14 @@ export interface ChatMessage {
   timestamp: number;
 }
 
+export interface ConceptIdea {
+  id: string;
+  name: string;
+  text: string;
+  rank: number;
+  notes: string;
+}
+
 export interface TestPlan {
   scenarios: string[];
   tasks: string[];
@@ -41,6 +49,12 @@ export interface AssessmentCategory {
   feedback_string: string;
 }
 
+export interface FollowUpStudy {
+  method: string;
+  gap: string;
+  description: string;
+}
+
 export interface Assessment {
   data_utilization: AssessmentCategory;
   thematic_quality: AssessmentCategory;
@@ -48,6 +62,22 @@ export interface Assessment {
   bias: AssessmentCategory;
   passed: boolean;
   revealedInsights?: { content: string; type: 'qualitative' | 'quantitative' }[];
+  followUpStudies?: FollowUpStudy[];
+}
+
+export interface HeuristicScore {
+  name: string;
+  score: number;
+  comment: string;
+}
+
+export interface PersonaEvaluation {
+  personaId: string;
+  satisfactionScore: number;
+  summary: string;
+  heuristics: HeuristicScore[];
+  topIssues: string[];
+  positives: string[];
 }
 
 export interface AppState {
@@ -56,10 +86,13 @@ export interface AppState {
   stickies: StickyNote[];
   clusters: Cluster[];
   personas: Persona[];
-  conceptPitch: string;
+  concepts: ConceptIdea[];
   chatHistories: Record<string, ChatMessage[]>;
   testPlan: TestPlan;
   mentorMessages: ChatMessage[];
+  evaluativeUrl: string;
+  personaEvaluations: PersonaEvaluation[];
+  evalChatHistories: Record<string, ChatMessage[]>;
   rigorCheckPassed: boolean;
   lastAssessment?: Assessment;
 }

@@ -25,11 +25,18 @@ import {
   Sparkles,
   Loader2,
   Target,
-  Frown
+  Frown,
+  Lightbulb,
+  ArrowUp,
+  ArrowDown,
+  Star,
+  Copy,
+  Globe,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
-import { Phase, AppState, StickyNote, Cluster, Persona, ChatMessage, TestPlan, Assessment } from './types';
+import { Phase, AppState, StickyNote, Cluster, Persona, ChatMessage, TestPlan, Assessment, ConceptIdea, PersonaEvaluation } from './types';
 import {
   mentorRigorCheck,
   generatePersonas,
@@ -38,7 +45,10 @@ import {
   simulateTestResults,
   generateInitialInsights,
   suggestThemeNames,
-  suggestStickyInsights
+  suggestStickyInsights,
+  suggestConcepts,
+  personaEvaluateWebsite,
+  evalPersonaChat
 } from './services/geminiService';
 import Papa from 'papaparse';
 import { useDropzone } from 'react-dropzone';
@@ -248,24 +258,53 @@ const MethodsMentor = ({
           </div>
 
           {lastAssessment && (
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                { label: 'Data Utilization', ...lastAssessment.data_utilization },
-                { label: 'Thematic Quality', ...lastAssessment.thematic_quality },
-                { label: 'System Alignment', ...lastAssessment.system_alignment },
-                { label: 'Bias', ...lastAssessment.bias }
-              ].map((cat, i) => (
-                <div key={i} className={cn(
-                  "p-2 rounded-lg border text-[10px] flex flex-col gap-1",
-                  cat.passed ? "bg-green-50 border-green-100" : "bg-red-50 border-red-100"
-                )}>
-                  <div className="flex items-center justify-between font-bold uppercase tracking-wider">
-                    <span className={cat.passed ? "text-green-700" : "text-red-700"}>{cat.label}</span>
-                    {cat.passed ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : <AlertCircle className="w-3 h-3 text-red-500" />}
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { label: 'Data Utilization', ...lastAssessment.data_utilization },
+                  { label: 'Thematic Quality', ...lastAssessment.thematic_quality },
+                  { label: 'System Alignment', ...lastAssessment.system_alignment },
+                  { label: 'Bias', ...lastAssessment.bias }
+                ].map((cat, i) => (
+                  <div key={i} className={cn(
+                    "p-2 rounded-lg border text-[10px] flex flex-col gap-1",
+                    cat.passed ? "bg-green-50 border-green-100" : "bg-red-50 border-red-100"
+                  )}>
+                    <div className="flex items-center justify-between font-bold uppercase tracking-wider">
+                      <span className={cat.passed ? "text-green-700" : "text-red-700"}>{cat.label}</span>
+                      {cat.passed ? <CheckCircle2 className="w-3 h-3 text-green-500" /> : <AlertCircle className="w-3 h-3 text-red-500" />}
+                    </div>
+                    <p className="text-zinc-600 leading-tight">{cat.feedback_string}</p>
                   </div>
-                  <p className="text-zinc-600 leading-tight">{cat.feedback_string}</p>
+                ))}
+              </div>
+
+              {/* Follow-Up Studies */}
+              {lastAssessment.followUpStudies && lastAssessment.followUpStudies.length > 0 && (
+                <div className="bg-indigo-50/70 border border-indigo-200 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center gap-1.5">
+                    <Search className="w-3 h-3 text-indigo-600" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">Suggested Follow-Up Studies</span>
+                  </div>
+                  <div className="space-y-2">
+                    {lastAssessment.followUpStudies.map((study, i) => (
+                      <div key={i} className="bg-white rounded-lg p-2.5 border border-indigo-100 space-y-1">
+                        <div className="flex items-start gap-2">
+                          <span className="text-[10px] font-bold bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded shrink-0 uppercase">
+                            {study.method}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-amber-700 font-semibold">
+                          Gap: {study.gap}
+                        </p>
+                        <p className="text-[11px] text-zinc-600 leading-relaxed">
+                          {study.description}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>
@@ -318,9 +357,12 @@ export default function App() {
     stickies: [],
     clusters: [],
     personas: [],
-    conceptPitch: "",
+    concepts: [],
     chatHistories: {},
     testPlan: { scenarios: [], tasks: [], questions: [] },
+    evaluativeUrl: "",
+    personaEvaluations: [],
+    evalChatHistories: {},
     mentorMessages: [{ role: 'mentor', content: "Welcome! Upload your UX research data to begin the Exploratory phase.", timestamp: Date.now() }],
     rigorCheckPassed: false
   });
@@ -350,7 +392,9 @@ export default function App() {
   const handleSimulateResults = async () => {
     setIsSimulating(true);
     try {
-      const result = await simulateTestResults(state.testPlan, state.personas, state.conceptPitch);
+      const topConcept = [...state.concepts].sort((a, b) => a.rank - b.rank)[0];
+      const conceptStr = topConcept ? `${topConcept.name}: ${topConcept.text}` : "";
+      const result = await simulateTestResults(state.testPlan, state.personas, conceptStr);
       setSimulationResult(result || "No results generated.");
     } catch (error) {
       console.error(error);
@@ -369,8 +413,8 @@ Themes identified: ${state.clusters.map(c => c.name).join(", ")}
 ## Personas
 ${state.personas.map(p => `### ${p.name} (${p.role})\n${p.bio}\n- Goals: ${p.goals.join(", ")}\n- Frustrations: ${p.frustrations.join(", ")}`).join("\n\n")}
 
-## Proposed Concept
-${state.conceptPitch}
+## Concepts (Ranked)
+${[...state.concepts].sort((a, b) => a.rank - b.rank).map((c, i) => `${i + 1}. **${c.name}**: ${c.text}${c.notes ? `\n   Notes: ${c.notes}` : ''}`).join("\n")}
 
 ## Usability Test Plan
 ### Scenarios
@@ -401,6 +445,8 @@ ${simulationResult || "Not simulated yet."}
   const [stickySuggestions, setStickySuggestions] = useState<{ content: string; type: string }[]>([]);
   const [isLoadingThemeSuggestions, setIsLoadingThemeSuggestions] = useState(false);
   const [isLoadingStickySuggestions, setIsLoadingStickySuggestions] = useState(false);
+  const [mentorConceptSuggestions, setMentorConceptSuggestions] = useState<string[]>([]);
+  const [isLoadingConceptSuggestions, setIsLoadingConceptSuggestions] = useState(false);
 
   const addSticky = () => {
     if (!newStickyContent.trim()) return;
@@ -651,46 +697,86 @@ ${simulationResult || "Not simulated yet."}
   const handleCheckRigor = async () => {
     setIsCheckingRigor(true);
     try {
-      const result = await mentorRigorCheck(state.currentPhase, {
-        stickies: state.stickies,
-        clusters: state.clusters,
-        concept: state.conceptPitch,
-        testPlan: state.testPlan
-      });
+      const isGenerative = state.currentPhase === 'generative';
 
+      const data = isGenerative
+        ? {
+            clusters: state.clusters.map(c => c.name),
+            personas: state.personas.map(p => ({ name: p.name, role: p.role, goals: p.goals, frustrations: p.frustrations })),
+            concepts: [...state.concepts].sort((a, b) => a.rank - b.rank).map(c => ({ rank: c.rank, name: c.name, text: c.text, notes: c.notes })),
+            chatHistories: Object.fromEntries(
+              Object.entries(state.chatHistories).map(([pid, msgs]: [string, ChatMessage[]]) => {
+                const persona = state.personas.find(p => p.id === pid);
+                return [persona?.name || pid, msgs.map(m => ({ role: m.role, content: m.content }))];
+              })
+            )
+          }
+        : {
+            stickies: state.stickies,
+            clusters: state.clusters,
+            testPlan: state.testPlan
+          };
+
+      const result = await mentorRigorCheck(state.currentPhase, data);
       const newMentorMessages: ChatMessage[] = [];
-      
+
       if (result.revealedInsights && result.revealedInsights.length > 0) {
-        newMentorMessages.push({
-          role: 'mentor',
-          content: `I've discovered some insights that weren't represented in your map. I've added them as new stickies for you to consider.`,
-          timestamp: Date.now()
-        });
+        if (isGenerative) {
+          // For generative phase: store suggestions for the sparkle button
+          setMentorConceptSuggestions(result.revealedInsights.map((insight: any) => insight.content));
 
-        const newStickies: StickyNote[] = result.revealedInsights.map((insight: any, i: number) => ({
-          id: `revealed-${Date.now()}-${i}`,
-          content: insight.content,
-          type: insight.type,
-          x: 100 + (i * 20),
-          y: 100 + (i * 20)
-        }));
+          newMentorMessages.push({
+            role: 'mentor',
+            content: `I have ${result.revealedInsights.length} concept suggestion${result.revealedInsights.length > 1 ? 's' : ''} based on gaps I see. Use the sparkle button next to "New Concept" to add them one at a time.`,
+            timestamp: Date.now()
+          });
 
-        setState(prev => ({
-          ...prev,
-          stickies: [...prev.stickies, ...newStickies],
-          rigorCheckPassed: result.passed,
-          lastAssessment: result,
-          mentorMessages: [...prev.mentorMessages, ...newMentorMessages]
-        }));
+          setState(prev => ({
+            ...prev,
+            rigorCheckPassed: result.passed,
+            lastAssessment: result,
+            mentorMessages: [...prev.mentorMessages, ...newMentorMessages]
+          }));
+        } else {
+          // For exploratory phase: revealed insights are stickies
+          const newStickies: StickyNote[] = result.revealedInsights.map((insight: any, i: number) => ({
+            id: `revealed-${Date.now()}-${i}`,
+            content: insight.content,
+            type: insight.type,
+            x: 100 + (i * 20),
+            y: 100 + (i * 20)
+          }));
+
+          newMentorMessages.push({
+            role: 'mentor',
+            content: `I've discovered some insights that weren't represented in your map. I've added them as new stickies for you to consider.`,
+            timestamp: Date.now()
+          });
+
+          setState(prev => ({
+            ...prev,
+            stickies: [...prev.stickies, ...newStickies],
+            rigorCheckPassed: result.passed,
+            lastAssessment: result,
+            mentorMessages: [...prev.mentorMessages, ...newMentorMessages]
+          }));
+        }
       } else {
+        const passedMsg = isGenerative
+          ? "Your concept ranking is well-reasoned and grounded in persona feedback. Great work!"
+          : "Excellent work! Your synthesis is rigorous and well-grounded.";
+        const failedMsg = isGenerative
+          ? "I've reviewed your concepts and ranking. Check the criteria below — consider having more persona conversations or revising your ranking."
+          : "I've reviewed your map. Check the criteria below for areas of improvement.";
+
         setState(prev => ({
           ...prev,
           rigorCheckPassed: result.passed,
           lastAssessment: result,
-          mentorMessages: [...prev.mentorMessages, { 
-            role: 'mentor', 
-            content: result.passed ? "Excellent work! Your synthesis is rigorous and well-grounded." : "I've reviewed your map. Check the criteria below for areas of improvement.", 
-            timestamp: Date.now() 
+          mentorMessages: [...prev.mentorMessages, {
+            role: 'mentor',
+            content: result.passed ? passedMsg : failedMsg,
+            timestamp: Date.now()
           }]
         }));
       }
@@ -716,9 +802,9 @@ ${simulationResult || "Not simulated yet."}
 
   const nextPhase = () => {
     if (state.currentPhase === 'exploratory') {
-      setState(prev => ({ ...prev, currentPhase: 'generative', rigorCheckPassed: false }));
+      setState(prev => ({ ...prev, currentPhase: 'generative', rigorCheckPassed: false, lastAssessment: undefined, mentorMessages: [{ role: 'mentor', content: "Welcome to the Generative phase! Create concepts, chat with personas to test your ideas, then run a rigor check.", timestamp: Date.now() }] }));
     } else if (state.currentPhase === 'generative') {
-      setState(prev => ({ ...prev, currentPhase: 'evaluative', rigorCheckPassed: false }));
+      setState(prev => ({ ...prev, currentPhase: 'evaluative', rigorCheckPassed: false, lastAssessment: undefined, mentorMessages: [{ role: 'mentor', content: "Welcome to the Evaluative phase! Build your test plan and run simulations.", timestamp: Date.now() }] }));
     }
   };
 
@@ -727,7 +813,8 @@ ${simulationResult || "Not simulated yet."}
     try {
       const clustersText = state.clusters.map(c => c.name);
       const existingNames = state.personas.map(p => p.name);
-      const personas = await generatePersonas(clustersText, existingNames);
+      const rawPersonas = await generatePersonas(clustersText, existingNames);
+      const personas = rawPersonas.map((p: any) => ({ ...p, id: p.id || `persona-${Date.now()}-${Math.random().toString(36).substr(2, 6)}` }));
       setState(prev => ({ ...prev, personas: [...prev.personas, ...personas] }));
     } catch (error) {
       console.error(error);
@@ -740,7 +827,8 @@ ${simulationResult || "Not simulated yet."}
     setIsGeneratingPersonas(true);
     try {
       const existingNames = state.personas.map(p => p.name);
-      const personas = await generatePersonas([cluster.name], existingNames);
+      const rawPersonas = await generatePersonas([cluster.name], existingNames);
+      const personas = rawPersonas.map((p: any) => ({ ...p, id: p.id || `persona-${Date.now()}-${Math.random().toString(36).substr(2, 6)}` }));
       setState(prev => ({ ...prev, personas: [...prev.personas, ...personas] }));
     } catch (error) {
       console.error(error);
@@ -761,10 +849,59 @@ ${simulationResult || "Not simulated yet."}
     setPersonaChatInputs(prev => ({ ...prev, [persona.id]: "" }));
 
     try {
-      const response = await personaChat(persona, state.conceptPitch, newHistory);
+      const conceptsSummary = [...state.concepts].sort((a, b) => a.rank - b.rank)
+        .map(c => `"${c.name}": ${c.text}`).join("\n");
+      const response = await personaChat(persona, conceptsSummary, newHistory);
       setState(prev => ({
         ...prev,
         chatHistories: { ...prev.chatHistories, [persona.id]: [...newHistory, { role: 'persona', content: response || "...", timestamp: Date.now() }] }
+      }));
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const [isEvaluating, setIsEvaluating] = useState(false);
+  const [expandedEvalPersonaId, setExpandedEvalPersonaId] = useState<string | null>(null);
+  const [evalChatInputs, setEvalChatInputs] = useState<Record<string, string>>({});
+
+  const handleRunEvaluations = async () => {
+    if (!state.evaluativeUrl.trim() || state.personas.length === 0) return;
+    setIsEvaluating(true);
+    const topConcept = [...state.concepts].sort((a, b) => a.rank - b.rank)[0];
+    const conceptStr = topConcept ? `${topConcept.name}: ${topConcept.text}` : "";
+
+    const evaluations: PersonaEvaluation[] = [];
+    for (const persona of state.personas) {
+      try {
+        const result = await personaEvaluateWebsite(persona, state.evaluativeUrl, conceptStr);
+        evaluations.push({ personaId: persona.id, ...result });
+      } catch (error) {
+        console.error(`Evaluation failed for ${persona.name}:`, error);
+      }
+    }
+
+    setState(prev => ({ ...prev, personaEvaluations: evaluations }));
+    setIsEvaluating(false);
+  };
+
+  const handleEvalChat = async (persona: Persona) => {
+    const input = evalChatInputs[persona.id]?.trim();
+    if (!input) return;
+
+    const userMsg: ChatMessage = { role: 'user', content: input, timestamp: Date.now() };
+    const existingHistory = state.evalChatHistories[persona.id] || [];
+    const newHistory = [...existingHistory, userMsg];
+
+    setState(prev => ({ ...prev, evalChatHistories: { ...prev.evalChatHistories, [persona.id]: newHistory } }));
+    setEvalChatInputs(prev => ({ ...prev, [persona.id]: "" }));
+
+    try {
+      const evaluation = state.personaEvaluations.find(e => e.personaId === persona.id);
+      const response = await evalPersonaChat(persona, evaluation || {}, state.evaluativeUrl, newHistory);
+      setState(prev => ({
+        ...prev,
+        evalChatHistories: { ...prev.evalChatHistories, [persona.id]: [...newHistory, { role: 'persona', content: response || "...", timestamp: Date.now() }] }
       }));
     } catch (error) {
       console.error(error);
@@ -1191,9 +1328,9 @@ ${simulationResult || "Not simulated yet."}
                           <div className="flex-1 overflow-y-auto p-3 space-y-2.5 min-h-[200px] max-h-[320px] bg-white">
                             {chatHistory.length === 0 && (
                               <div className="flex items-center justify-center h-full text-zinc-300 text-xs text-center p-4">
-                                {state.conceptPitch.trim()
+                                {state.concepts.length > 0
                                   ? `Pitch your concept to ${p.name.split(' ')[0]} and get their feedback`
-                                  : "Write a concept pitch above first, then chat here"}
+                                  : "Add a concept below first, then chat here"}
                               </div>
                             )}
                             {chatHistory.map((msg, i) => (
@@ -1282,31 +1419,295 @@ ${simulationResult || "Not simulated yet."}
         </div>
       </section>
 
-      {/* Concept Pitch - full width */}
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold flex items-center gap-2">
-          <ClipboardCheck className="w-5 h-5 text-indigo-600" />
-          Concept Pitch
-        </h2>
-        <textarea
-          value={state.conceptPitch}
-          onChange={(e) => setState(prev => ({ ...prev, conceptPitch: e.target.value }))}
-          placeholder="Describe your proposed solution here. Then open any persona's chat to pitch it to them..."
-          className="w-full h-40 p-4 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none text-sm"
-        />
+      {/* HMW Prompts + Concept Ideas */}
+      <section className="space-y-5">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-semibold flex items-center gap-2">
+            <Lightbulb className="w-5 h-5 text-amber-500" />
+            Concept Ideas
+          </h2>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                const newConcept: ConceptIdea = {
+                  id: `concept-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                  name: `Concept ${String.fromCharCode(65 + state.concepts.length)}`,
+                  text: "",
+                  rank: state.concepts.length + 1,
+                  notes: ""
+                };
+                setState(prev => ({ ...prev, concepts: [...prev.concepts, newConcept] }));
+              }}
+              className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 flex items-center gap-2"
+            >
+              <Plus className="w-4 h-4" /> New Concept
+            </button>
+            <button
+              onClick={async () => {
+                if (mentorConceptSuggestions.length > 0) {
+                  // Pop one from the queue
+                  const suggestion = mentorConceptSuggestions[0];
+                  const newConcept: ConceptIdea = {
+                    id: `suggested-concept-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                    name: `Concept ${String.fromCharCode(65 + state.concepts.length)}`,
+                    text: suggestion,
+                    rank: state.concepts.length + 1,
+                    notes: "AI-suggested concept"
+                  };
+                  setState(prev => ({ ...prev, concepts: [...prev.concepts, newConcept] }));
+                  setMentorConceptSuggestions(prev => prev.slice(1));
+                } else {
+                  // Fetch new suggestions
+                  setIsLoadingConceptSuggestions(true);
+                  try {
+                    const suggestions = await suggestConcepts(
+                      state.clusters.map(c => c.name),
+                      state.personas,
+                      state.concepts.map(c => `${c.name}: ${c.text}`)
+                    );
+                    if (suggestions.length > 0) {
+                      // Add the first one immediately, queue the rest
+                      const newConcept: ConceptIdea = {
+                        id: `suggested-concept-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                        name: `Concept ${String.fromCharCode(65 + state.concepts.length)}`,
+                        text: suggestions[0],
+                        rank: state.concepts.length + 1,
+                        notes: "AI-suggested concept"
+                      };
+                      setState(prev => ({ ...prev, concepts: [...prev.concepts, newConcept] }));
+                      setMentorConceptSuggestions(suggestions.slice(1));
+                    }
+                  } catch (error) {
+                    console.error(error);
+                  } finally {
+                    setIsLoadingConceptSuggestions(false);
+                  }
+                }
+              }}
+              disabled={isLoadingConceptSuggestions || (state.clusters.length === 0 && state.personas.length === 0)}
+              className="px-4 py-2 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-md text-sm font-medium hover:from-indigo-600 hover:to-purple-600 disabled:opacity-50 flex items-center gap-2 shadow-md transition-all"
+              title={mentorConceptSuggestions.length > 0 ? "Add next AI suggestion" : "Get AI concept suggestions"}
+            >
+              {isLoadingConceptSuggestions
+                ? <Loader2 className="w-4 h-4 animate-spin" />
+                : <Sparkles className="w-4 h-4" />}
+              {mentorConceptSuggestions.length > 0
+                ? `Add Suggestion (${mentorConceptSuggestions.length})`
+                : "Suggest"}
+            </button>
+          </div>
+        </div>
+
+        {/* HMW Inspiration Prompts */}
+        <div className="bg-amber-50/70 border border-amber-200 rounded-xl p-4">
+          <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600 mb-2.5 flex items-center gap-1.5">
+            <Lightbulb className="w-3 h-3" /> "How Might We..." Prompts for Inspiration
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {[
+              "How might we use this to improve healthcare access?",
+              "How might we empower underserved communities?",
+              "How might we reduce friction in everyday tasks?",
+              "How might we build trust with first-time users?",
+              "How might we make this accessible to non-technical users?",
+              "How might we turn frustrations into moments of delight?",
+              ...(state.clusters.length > 0
+                ? state.clusters.map(c => `How might we address "${c.name}" more effectively?`)
+                : [])
+            ].map((prompt, i) => (
+              <button
+                key={i}
+                onClick={() => {
+                  const newConcept: ConceptIdea = {
+                    id: `concept-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+                    name: `Concept ${String.fromCharCode(65 + state.concepts.length)}`,
+                    text: prompt + " ",
+                    rank: state.concepts.length + 1,
+                    notes: ""
+                  };
+                  setState(prev => ({ ...prev, concepts: [...prev.concepts, newConcept] }));
+                }}
+                className="text-[11px] px-3 py-1.5 bg-white border border-amber-200 rounded-full text-amber-800 hover:bg-amber-100 hover:border-amber-300 transition-all cursor-pointer"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Concept Cards */}
+        {state.concepts.length === 0 ? (
+          <div className="border-2 border-dashed border-zinc-200 rounded-xl p-8 text-center text-zinc-400 text-sm">
+            No concepts yet. Click "New Concept" or pick a prompt above to start ideating.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {[...state.concepts].sort((a, b) => a.rank - b.rank).map((concept) => (
+              <motion.div
+                key={concept.id}
+                layout
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={cn(
+                  "bg-white border rounded-xl overflow-hidden transition-all",
+                  concept.rank === 1
+                    ? "border-amber-300 ring-1 ring-amber-200 shadow-md"
+                    : "border-zinc-200 shadow-sm"
+                )}
+              >
+                <div className="flex items-stretch">
+                  {/* Rank column */}
+                  <div className={cn(
+                    "flex flex-col items-center justify-center px-3 py-4 border-r gap-1",
+                    concept.rank === 1
+                      ? "bg-amber-50 border-amber-200"
+                      : "bg-zinc-50 border-zinc-200"
+                  )}>
+                    <button
+                      onClick={() => {
+                        if (concept.rank <= 1) return;
+                        setState(prev => ({
+                          ...prev,
+                          concepts: prev.concepts.map(c => {
+                            if (c.id === concept.id) return { ...c, rank: c.rank - 1 };
+                            if (c.rank === concept.rank - 1) return { ...c, rank: c.rank + 1 };
+                            return c;
+                          })
+                        }));
+                      }}
+                      disabled={concept.rank <= 1}
+                      className="p-0.5 text-zinc-400 hover:text-indigo-600 disabled:opacity-20 transition-colors"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    </button>
+                    <div className={cn(
+                      "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold",
+                      concept.rank === 1
+                        ? "bg-amber-400 text-white"
+                        : "bg-zinc-200 text-zinc-600"
+                    )}>
+                      {concept.rank === 1 ? <Star className="w-3.5 h-3.5" /> : concept.rank}
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (concept.rank >= state.concepts.length) return;
+                        setState(prev => ({
+                          ...prev,
+                          concepts: prev.concepts.map(c => {
+                            if (c.id === concept.id) return { ...c, rank: c.rank + 1 };
+                            if (c.rank === concept.rank + 1) return { ...c, rank: c.rank - 1 };
+                            return c;
+                          })
+                        }));
+                      }}
+                      disabled={concept.rank >= state.concepts.length}
+                      className="p-0.5 text-zinc-400 hover:text-indigo-600 disabled:opacity-20 transition-colors"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Content */}
+                  <div className="flex-1 p-4 space-y-2">
+                    {/* Concept name */}
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={concept.name}
+                        onChange={(e) => setState(prev => ({
+                          ...prev,
+                          concepts: prev.concepts.map(c => c.id === concept.id ? { ...c, name: e.target.value } : c)
+                        }))}
+                        className={cn(
+                          "font-bold text-sm px-2 py-1 rounded-md border focus:ring-2 focus:ring-indigo-500 focus:outline-none w-48",
+                          concept.rank === 1
+                            ? "border-amber-300 bg-amber-50 text-amber-800"
+                            : "border-zinc-200 bg-zinc-50 text-zinc-800"
+                        )}
+                        placeholder="Name this concept..."
+                      />
+                      <span className="text-[10px] text-zinc-300 italic">
+                        Mention "{concept.name}" in persona chats to discuss it
+                      </span>
+                    </div>
+                    <textarea
+                      value={concept.text}
+                      onChange={(e) => setState(prev => ({
+                        ...prev,
+                        concepts: prev.concepts.map(c => c.id === concept.id ? { ...c, text: e.target.value } : c)
+                      }))}
+                      placeholder="Describe your concept idea..."
+                      className="w-full p-2 border border-zinc-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none resize-none min-h-[60px]"
+                    />
+                    <textarea
+                      value={concept.notes}
+                      onChange={(e) => setState(prev => ({
+                        ...prev,
+                        concepts: prev.concepts.map(c => c.id === concept.id ? { ...c, notes: e.target.value } : c)
+                      }))}
+                      placeholder="Notes from persona conversations, reasoning for ranking..."
+                      className="w-full p-2 border border-zinc-100 rounded-lg text-[11px] text-zinc-500 focus:ring-1 focus:ring-indigo-400 focus:outline-none resize-none min-h-[36px] bg-zinc-50/50"
+                    />
+                  </div>
+
+                  {/* Delete */}
+                  <div className="flex items-start p-3">
+                    <button
+                      onClick={() => {
+                        const removedRank = concept.rank;
+                        setState(prev => ({
+                          ...prev,
+                          concepts: prev.concepts
+                            .filter(c => c.id !== concept.id)
+                            .map(c => c.rank > removedRank ? { ...c, rank: c.rank - 1 } : c)
+                        }));
+                      }}
+                      className="p-1.5 text-zinc-300 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        )}
+
+        {state.concepts.length > 0 && (
+          <p className="text-[11px] text-zinc-400 text-center">
+            Use the arrows to rank concepts. Chat with personas above to test ideas, then note what you learned.
+          </p>
+        )}
       </section>
     </div>
   );
 
-  const renderEvaluative = () => (
+  const renderEvaluative = () => {
+    const avatarColors = [
+      'from-violet-400 to-indigo-400',
+      'from-pink-400 to-rose-400',
+      'from-emerald-400 to-teal-400',
+      'from-amber-400 to-orange-400',
+      'from-cyan-400 to-blue-400',
+      'from-fuchsia-400 to-purple-400'
+    ];
+
+    const scoreColor = (score: number, max: number) => {
+      const pct = score / max;
+      if (pct >= 0.8) return "text-emerald-600 bg-emerald-50 border-emerald-200";
+      if (pct >= 0.6) return "text-amber-600 bg-amber-50 border-amber-200";
+      return "text-red-600 bg-red-50 border-red-200";
+    };
+
+    return (
     <div className="flex-1 flex flex-col p-8 overflow-y-auto space-y-8">
+      {/* Website Evaluation Section */}
       <section className="space-y-6">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold flex items-center gap-2">
-            <ClipboardCheck className="w-5 h-5 text-indigo-600" />
-            Test Plan Builder
+            <Globe className="w-5 h-5 text-indigo-600" />
+            Persona Website Evaluation
           </h2>
-          <button 
+          <button
             onClick={handleExport}
             className="px-4 py-2 border border-zinc-200 rounded-md text-sm font-medium flex items-center gap-2 hover:bg-zinc-50"
           >
@@ -1314,13 +1715,250 @@ ${simulationResult || "Not simulated yet."}
           </button>
         </div>
 
+        {/* URL Input */}
+        <div className="bg-white border border-zinc-200 rounded-xl p-5 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="flex-1 flex items-center gap-2 border border-zinc-200 rounded-lg px-3 py-2 focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-transparent">
+              <Globe className="w-4 h-4 text-zinc-400 shrink-0" />
+              <input
+                value={state.evaluativeUrl}
+                onChange={(e) => setState(prev => ({ ...prev, evaluativeUrl: e.target.value }))}
+                placeholder="Enter website URL to evaluate (e.g., https://example.com)"
+                className="flex-1 text-sm focus:outline-none"
+              />
+              {state.evaluativeUrl && (
+                <a href={state.evaluativeUrl} target="_blank" rel="noopener noreferrer" className="text-zinc-400 hover:text-indigo-500">
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+              )}
+            </div>
+            <button
+              onClick={handleRunEvaluations}
+              disabled={isEvaluating || !state.evaluativeUrl.trim() || state.personas.length === 0}
+              className="px-5 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-2 shrink-0"
+            >
+              {isEvaluating ? <><Loader2 className="w-4 h-4 animate-spin" /> Evaluating...</> : "Run Evaluation"}
+            </button>
+          </div>
+          {state.personas.length === 0 && (
+            <p className="text-[11px] text-amber-600">Generate personas in the Generative phase first.</p>
+          )}
+          {isEvaluating && (
+            <div className="flex items-center gap-2 text-xs text-indigo-500">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Evaluating with {state.personas.length} persona{state.personas.length !== 1 ? 's' : ''}... This may take a moment.
+            </div>
+          )}
+        </div>
+
+        {/* Evaluation Results */}
+        {state.personaEvaluations.length > 0 && (
+          <div className="space-y-4">
+            {/* Average score summary */}
+            <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-4 flex items-center gap-6">
+              <div className="text-center">
+                <div className="text-3xl font-bold text-indigo-600">
+                  {(state.personaEvaluations.reduce((sum, e) => sum + e.satisfactionScore, 0) / state.personaEvaluations.length).toFixed(1)}
+                </div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Avg Satisfaction</div>
+              </div>
+              <div className="flex-1 flex flex-wrap gap-2">
+                {state.personaEvaluations.map((evalResult) => {
+                  const persona = state.personas.find(p => p.id === evalResult.personaId);
+                  const pIdx = state.personas.findIndex(p => p.id === evalResult.personaId);
+                  return (
+                    <div key={evalResult.personaId} className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full border border-zinc-200 text-xs">
+                      <div className={cn("w-5 h-5 rounded-full bg-gradient-to-br flex items-center justify-center text-white text-[8px] font-bold", avatarColors[pIdx % avatarColors.length])}>
+                        {persona?.name.split(' ').map(w => w[0]).join('').slice(0, 2)}
+                      </div>
+                      <span className="font-medium text-zinc-700">{persona?.name.split(' ')[0]}</span>
+                      <span className={cn("font-bold px-1.5 py-0.5 rounded border text-[10px]", scoreColor(evalResult.satisfactionScore, 10))}>
+                        {evalResult.satisfactionScore}/10
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Individual persona evaluation cards */}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              {state.personaEvaluations.map((evalResult) => {
+                const persona = state.personas.find(p => p.id === evalResult.personaId);
+                if (!persona) return null;
+                const pIdx = state.personas.findIndex(p => p.id === evalResult.personaId);
+                const avatarGradient = avatarColors[pIdx % avatarColors.length];
+                const initials = persona.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+                const isExpanded = expandedEvalPersonaId === evalResult.personaId;
+                const evalChatHistory = state.evalChatHistories[persona.id] || [];
+                const evalChatInput = evalChatInputs[persona.id] || "";
+
+                return (
+                  <motion.div
+                    key={evalResult.personaId}
+                    layout
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={cn(
+                      "bg-white border rounded-2xl overflow-hidden transition-all",
+                      isExpanded ? "col-span-1 xl:col-span-2 ring-2 ring-indigo-500 ring-offset-2 shadow-xl" : "shadow-sm hover:shadow-md"
+                    )}
+                  >
+                    <div className={cn("h-1.5 bg-gradient-to-r", avatarGradient)} />
+
+                    <div className={cn(isExpanded ? "flex flex-col lg:flex-row" : "")}>
+                      {/* Evaluation info */}
+                      <div className={cn("p-5 space-y-3", isExpanded ? "lg:w-1/2 lg:border-r lg:border-zinc-100" : "")}>
+                        {/* Header */}
+                        <div className="flex items-center gap-3">
+                          <div className={cn("w-10 h-10 rounded-full bg-gradient-to-br flex items-center justify-center text-white font-bold text-xs shrink-0 shadow-md", avatarGradient)}>
+                            {initials}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <h3 className="font-bold text-sm text-zinc-900">{persona.name}</h3>
+                            <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wide">{persona.role}</p>
+                          </div>
+                          <div className={cn("text-2xl font-bold px-3 py-1 rounded-lg border", scoreColor(evalResult.satisfactionScore, 10))}>
+                            {evalResult.satisfactionScore}<span className="text-xs font-normal opacity-60">/10</span>
+                          </div>
+                          <button
+                            onClick={() => setExpandedEvalPersonaId(isExpanded ? null : evalResult.personaId)}
+                            className={cn("p-1.5 rounded-lg transition-colors shrink-0", isExpanded ? "bg-indigo-100 text-indigo-600" : "hover:bg-zinc-100 text-zinc-400 hover:text-indigo-500")}
+                            title={isExpanded ? "Close interview" : "Interview this persona"}
+                          >
+                            <MessageSquare className="w-4 h-4" />
+                          </button>
+                        </div>
+
+                        {/* Summary */}
+                        <p className="text-[12px] text-zinc-600 leading-relaxed">{evalResult.summary}</p>
+
+                        {/* Issues & Positives side by side */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="bg-red-50/70 rounded-lg p-2.5">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-red-500 flex items-center gap-1 mb-1.5">
+                              <AlertCircle className="w-3 h-3" /> Top Issues
+                            </span>
+                            <ul className="space-y-1">
+                              {evalResult.topIssues?.map((issue, i) => (
+                                <li key={i} className="text-[11px] text-red-800">{issue}</li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div className="bg-emerald-50/70 rounded-lg p-2.5">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 flex items-center gap-1 mb-1.5">
+                              <CheckCircle2 className="w-3 h-3" /> Positives
+                            </span>
+                            <ul className="space-y-1">
+                              {evalResult.positives?.map((pos, i) => (
+                                <li key={i} className="text-[11px] text-emerald-800">{pos}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+
+                        {/* Heuristic scores */}
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Heuristic Scores</span>
+                          <div className="grid grid-cols-2 gap-1">
+                            {evalResult.heuristics?.map((h, i) => (
+                              <div key={i} className="flex items-center gap-1.5 text-[10px]" title={h.comment}>
+                                <div className="flex gap-px">
+                                  {[1, 2, 3, 4, 5].map(n => (
+                                    <div key={n} className={cn("w-2 h-2 rounded-sm", n <= h.score ? "bg-indigo-500" : "bg-zinc-200")} />
+                                  ))}
+                                </div>
+                                <span className="text-zinc-600 truncate">{h.name}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {!isExpanded && (
+                          <button
+                            onClick={() => setExpandedEvalPersonaId(evalResult.personaId)}
+                            className="w-full text-[10px] text-zinc-400 text-center pt-1 hover:text-indigo-500 transition-colors flex items-center justify-center gap-1"
+                          >
+                            <MessageSquare className="w-3 h-3" />
+                            Interview {persona.name.split(' ')[0]} about their evaluation
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Inline chat (expanded) */}
+                      <AnimatePresence>
+                        {isExpanded && (
+                          <motion.div
+                            initial={{ opacity: 0, width: 0 }}
+                            animate={{ opacity: 1, width: 'auto' }}
+                            exit={{ opacity: 0, width: 0 }}
+                            className="lg:w-1/2 flex flex-col border-t lg:border-t-0 border-zinc-100"
+                          >
+                            <div className="px-4 py-2.5 bg-zinc-50 border-b border-zinc-100 flex items-center gap-2">
+                              <div className={cn("w-6 h-6 rounded-full bg-gradient-to-br flex items-center justify-center text-white text-[9px] font-bold", avatarGradient)}>
+                                {initials}
+                              </div>
+                              <span className="text-xs font-semibold text-zinc-600">Interview {persona.name.split(' ')[0]}</span>
+                              {evalChatHistory.length > 0 && (
+                                <span className="text-[10px] text-zinc-400 ml-auto">{evalChatHistory.length} messages</span>
+                              )}
+                            </div>
+                            <div className="flex-1 overflow-y-auto p-3 space-y-2.5 min-h-[200px] max-h-[320px] bg-white">
+                              {evalChatHistory.length === 0 && (
+                                <div className="flex items-center justify-center h-full text-zinc-300 text-xs text-center p-4">
+                                  Ask {persona.name.split(' ')[0]} about their {evalResult.satisfactionScore}/10 score, specific issues, or what would improve their experience
+                                </div>
+                              )}
+                              {evalChatHistory.map((msg, i) => (
+                                <div key={i} className={cn(
+                                  "max-w-[85%] px-3 py-2 rounded-xl text-[12px] leading-relaxed",
+                                  msg.role === 'user' ? "ml-auto bg-indigo-600 text-white rounded-br-sm" : "bg-zinc-100 text-zinc-800 rounded-bl-sm"
+                                )}>
+                                  {msg.content}
+                                </div>
+                              ))}
+                            </div>
+                            <div className="p-2.5 bg-zinc-50 border-t border-zinc-100 flex gap-2">
+                              <input
+                                value={evalChatInput}
+                                onChange={(e) => setEvalChatInputs(prev => ({ ...prev, [persona.id]: e.target.value }))}
+                                onKeyDown={(e) => e.key === 'Enter' && handleEvalChat(persona)}
+                                placeholder={`Ask about their evaluation...`}
+                                className="flex-1 px-3 py-1.5 border border-zinc-200 rounded-lg text-xs focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white"
+                              />
+                              <button
+                                onClick={() => handleEvalChat(persona)}
+                                disabled={!evalChatInput.trim()}
+                                className="p-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-30 transition-all"
+                              >
+                                <Send className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Test Plan Builder (existing) */}
+      <section className="space-y-6 pt-4 border-t border-zinc-200">
+        <h2 className="text-xl font-semibold flex items-center gap-2">
+          <ClipboardCheck className="w-5 h-5 text-indigo-600" />
+          Test Plan Builder
+        </h2>
         <div className="space-y-8">
           <div className="space-y-4">
             <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Scenarios</h3>
             <div className="space-y-2">
               {state.testPlan.scenarios.map((s, i) => (
                 <div key={i} className="flex gap-2">
-                  <input 
+                  <input
                     value={s}
                     onChange={(e) => {
                       const newScenarios = [...state.testPlan.scenarios];
@@ -1329,7 +1967,7 @@ ${simulationResult || "Not simulated yet."}
                     }}
                     className="flex-1 p-2 border border-zinc-200 rounded-md text-sm"
                   />
-                  <button 
+                  <button
                     onClick={() => {
                       const newScenarios = state.testPlan.scenarios.filter((_, idx) => idx !== i);
                       setState(prev => ({ ...prev, testPlan: { ...prev.testPlan, scenarios: newScenarios } }));
@@ -1340,7 +1978,7 @@ ${simulationResult || "Not simulated yet."}
                   </button>
                 </div>
               ))}
-              <button 
+              <button
                 onClick={() => setState(prev => ({ ...prev, testPlan: { ...prev.testPlan, scenarios: [...prev.testPlan.scenarios, ""] } }))}
                 className="text-sm text-indigo-600 font-medium hover:underline flex items-center gap-1"
               >
@@ -1355,7 +1993,7 @@ ${simulationResult || "Not simulated yet."}
               {state.testPlan.tasks.map((t, i) => (
                 <div key={i} className="space-y-2">
                   <div className="flex gap-2">
-                    <input 
+                    <input
                       value={t}
                       onChange={(e) => {
                         const newTasks = [...state.testPlan.tasks];
@@ -1366,7 +2004,7 @@ ${simulationResult || "Not simulated yet."}
                       className="flex-1 p-2 border border-zinc-200 rounded-md text-sm"
                       placeholder="e.g., Try to find the checkout button..."
                     />
-                    <button 
+                    <button
                       onClick={() => {
                         const newTasks = state.testPlan.tasks.filter((_, idx) => idx !== i);
                         setState(prev => ({ ...prev, testPlan: { ...prev.testPlan, tasks: newTasks } }));
@@ -1386,7 +2024,7 @@ ${simulationResult || "Not simulated yet."}
                   )}
                 </div>
               ))}
-              <button 
+              <button
                 onClick={() => setState(prev => ({ ...prev, testPlan: { ...prev.testPlan, tasks: [...prev.testPlan.tasks, ""] } }))}
                 className="text-sm text-indigo-600 font-medium hover:underline flex items-center gap-1"
               >
@@ -1398,7 +2036,7 @@ ${simulationResult || "Not simulated yet."}
           <div className="pt-8 border-t border-zinc-100 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold uppercase tracking-widest text-zinc-400">Simulation Engine</h3>
-              <button 
+              <button
                 onClick={handleSimulateResults}
                 disabled={isSimulating || state.testPlan.tasks.length === 0}
                 className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm font-medium hover:bg-indigo-700 disabled:opacity-50"
@@ -1417,7 +2055,8 @@ ${simulationResult || "Not simulated yet."}
         </div>
       </section>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="flex h-screen bg-white text-zinc-900 font-sans selection:bg-indigo-100 selection:text-indigo-900">
@@ -1429,7 +2068,7 @@ ${simulationResult || "Not simulated yet."}
         
         <nav className="flex-1 flex flex-col space-y-4">
           <button 
-            onClick={() => setState(prev => ({ ...prev, currentPhase: 'exploratory' }))}
+            onClick={() => setState(prev => ({ ...prev, currentPhase: 'exploratory', rigorCheckPassed: false, lastAssessment: undefined, mentorMessages: [{ role: 'mentor', content: "Switched to Exploratory phase. Run a rigor check when you're ready.", timestamp: Date.now() }] }))}
             className={cn(
               "p-3 rounded-xl transition-all",
               state.currentPhase === 'exploratory' ? "bg-white shadow-sm text-indigo-600 ring-1 ring-zinc-200" : "text-zinc-400 hover:text-zinc-600"
@@ -1438,7 +2077,7 @@ ${simulationResult || "Not simulated yet."}
             <Search className="w-6 h-6" />
           </button>
           <button 
-            onClick={() => setState(prev => ({ ...prev, currentPhase: 'generative' }))}
+            onClick={() => setState(prev => ({ ...prev, currentPhase: 'generative', rigorCheckPassed: false, lastAssessment: undefined, mentorMessages: [{ role: 'mentor', content: "Switched to Generative phase. Create concepts and chat with personas, then run a rigor check.", timestamp: Date.now() }] }))}
             className={cn(
               "p-3 rounded-xl transition-all",
               state.currentPhase === 'generative' ? "bg-white shadow-sm text-indigo-600 ring-1 ring-zinc-200" : "text-zinc-400 hover:text-zinc-600"
@@ -1447,7 +2086,7 @@ ${simulationResult || "Not simulated yet."}
             <Brain className="w-6 h-6" />
           </button>
           <button 
-            onClick={() => setState(prev => ({ ...prev, currentPhase: 'evaluative' }))}
+            onClick={() => setState(prev => ({ ...prev, currentPhase: 'evaluative', rigorCheckPassed: false, lastAssessment: undefined, mentorMessages: [{ role: 'mentor', content: "Switched to Evaluative phase. Build your test plan and run simulations.", timestamp: Date.now() }] }))}
             className={cn(
               "p-3 rounded-xl transition-all",
               state.currentPhase === 'evaluative' ? "bg-white shadow-sm text-indigo-600 ring-1 ring-zinc-200" : "text-zinc-400 hover:text-zinc-600"
